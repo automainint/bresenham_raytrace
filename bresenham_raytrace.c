@@ -1,9 +1,48 @@
+/*  Bresenham raytracing voxel renderer.
+ */
+
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+void on_init() { }
+void on_cleanup() { }
+void on_key_down(ptrdiff_t const key) { }
+void on_key_up(ptrdiff_t const key) { }
+void on_button_down(ptrdiff_t const button) { }
+void on_button_up(ptrdiff_t const button) { }
+void on_mouse_wheel(ptrdiff_t const x_delta,
+                    ptrdiff_t const y_delta) { }
+void on_mouse_motion(ptrdiff_t const x, ptrdiff_t const y,
+                     ptrdiff_t const x_delta,
+                     ptrdiff_t const y_delta) { }
+void on_update(int64_t const time_elapsed) { }
+
+typedef struct {
+  uint8_t v[4];
+} color_t;
+
+static_assert(sizeof(color_t) == 4, "Pixel size check");
+
+void on_render(ptrdiff_t const width, ptrdiff_t const height,
+               ptrdiff_t const pitch, color_t *const data) {
+  assert(data != NULL);
+
+  for (ptrdiff_t j = 0; j < height; j++)
+    for (ptrdiff_t i = 0; i < width; i++) {
+      color_t *pixel = (color_t *) ((char *) data + j * pitch) + i;
+      pixel->v[0]    = 0xff;
+      pixel->v[1]    = 0xff & (i + j);
+      pixel->v[2]    = 0xff & j;
+      pixel->v[3]    = 0xff & i;
+    }
+}
+
+/*  System setup with SDL.
+ */
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_video.h>
@@ -40,29 +79,6 @@ enum {
   STATUS_ERROR_SDL_RENDER_COPY_FAILED
 };
 
-typedef struct {
-  uint8_t v[4];
-} color_t;
-
-static_assert(sizeof(color_t) == 4, "Pixel size check");
-
-void render(ptrdiff_t const width, ptrdiff_t const height,
-            ptrdiff_t const pitch, color_t *const data) {
-  assert(data != NULL);
-
-  if (width <= 0 || height <= 0 || data == NULL)
-    return;
-
-  for (ptrdiff_t j = 0; j < height; j++)
-    for (ptrdiff_t i = 0; i < width; i++) {
-      color_t *pixel = (color_t *) ((char *) data + j * pitch) + i;
-      pixel->v[0]    = 0xff;
-      pixel->v[1]    = 0xff & (i + j);
-      pixel->v[2]    = 0xff & j;
-      pixel->v[3]    = 0xff & i;
-    }
-}
-
 struct {
   SDL_Window   *window;
   SDL_Renderer *renderer;
@@ -77,10 +93,6 @@ struct {
   int64_t       time_frame;
   int64_t       frame_padding;
 } g_app;
-
-void init() { }
-
-void cleanup() { }
 
 int frame(int64_t time_elapsed) {
   int width, height;
@@ -111,6 +123,8 @@ int frame(int64_t time_elapsed) {
     g_app.height = height;
   }
 
+  on_update(time_elapsed);
+
   if (g_app.buffer != NULL) {
     int      pitch;
     color_t *data;
@@ -122,7 +136,9 @@ int frame(int64_t time_elapsed) {
       return STATUS_ERROR_SDL_LOCK_TEXTURE_FAILED;
     }
 
-    render(g_app.width, g_app.height, pitch, data);
+    if (g_app.width > 0 && g_app.height > 0 && pitch > 0 &&
+        data != NULL)
+      on_render(g_app.width, g_app.height, pitch, data);
 
     SDL_UnlockTexture(g_app.buffer);
 
@@ -144,14 +160,14 @@ void loop() {
   while (SDL_PollEvent(&event) == 1) {
     switch (event.type) {
       case SDL_MOUSEMOTION:
-        /*  event.motion.x, event.motion.y, event.motion.xrel,
-         *  event.motion.yrel
-         */
+        on_mouse_motion(event.motion.x, event.motion.y,
+                        event.motion.xrel, event.motion.yrel);
         break;
+
       case SDL_MOUSEWHEEL:
-        /*  event.wheel.preciseX, event.wheel.preciseY
-         */
+        on_mouse_wheel(event.wheel.preciseX, event.wheel.preciseY);
         break;
+
       case SDL_KEYDOWN:
         if (event.key.repeat == 0) {
           if (event.key.keysym.sym == SDLK_LALT ||
@@ -172,29 +188,30 @@ void loop() {
             }
           }
 #endif
-          else {
-            /*  event.key.keysym.scancode
-             */
-          }
+          on_key_down(event.key.keysym.scancode);
         }
         break;
+
       case SDL_KEYUP:
         if ((event.key.keysym.sym == SDLK_LALT ||
              event.key.keysym.sym == SDLK_RALT) &&
             g_app.is_alt > 0)
           g_app.is_alt--;
-        /*  event.key.keysym.scancode
-         */
+        on_key_up(event.key.keysym.scancode);
         break;
+
       case SDL_MOUSEBUTTONDOWN:
-        /*  event.button.button
-         */
+        on_button_down(event.button.button);
         break;
+
       case SDL_MOUSEBUTTONUP:
-        /*  event.button.button
-         */
+        on_button_up(event.button.button);
         break;
-      case SDL_QUIT: g_app.done = 1; break;
+
+      case SDL_QUIT:
+        g_app.done = 1;
+        on_cleanup();
+        return;
     }
   }
 
@@ -203,7 +220,9 @@ void loop() {
 
   g_app.time = time_now;
 
-  if (frame(time_elapsed) != STATUS_OK)
+  assert(time_elapsed >= 0);
+
+  if (time_elapsed >= 0 && frame(time_elapsed) != STATUS_OK)
     g_app.done = 1;
 
   g_app.frames++;
@@ -253,14 +272,12 @@ int main(int argc, char **argv) {
   emscripten_set_main_loop(loop, 0, 0);
 #endif
 
-  init();
+  on_init();
 
   g_app.time = SDL_GetTicks64();
 
 #ifndef __EMSCRIPTEN__
   while (!g_app.done) loop();
-
-  cleanup();
 
   if (g_app.buffer != NULL)
     SDL_DestroyTexture(g_app.buffer);
